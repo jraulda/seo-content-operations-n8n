@@ -1,0 +1,647 @@
+{
+  "name": "SEO Content Operations - Assign in Trello",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "04515f7d-1ae2-5d6a-96c7-4e4d25e35c1b",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "76e84df3-bfed-55c3-a583-1de448cc5694",
+              "name": "article_id",
+              "value": "={{ $('Validate Assignment Candidates').item.json.article_id }}",
+              "type": "string"
+            },
+            {
+              "id": "aab34cfe-1f79-5deb-a44b-608e5ad81b43",
+              "name": "status",
+              "value": "In process",
+              "type": "string"
+            },
+            {
+              "id": "085968a3-9055-5363-8c6d-c876598263d9",
+              "name": "assignment_date",
+              "value": "={{ $now.setZone('UTC').toISODate() }}",
+              "type": "string"
+            },
+            {
+              "id": "b6021f58-183c-5467-9859-b7a0f96f3eb6",
+              "name": "trello_card_id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "b76109bb-477b-52cf-84a2-21bbcb174ecb",
+              "name": "last_updated",
+              "value": "={{ $now.setZone('UTC').toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ea808eab-ee1f-5ca7-8dae-7f369a92010d",
+      "name": "Prepare Assignment Update",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1696,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "account_config",
+          "mode": "name"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "detectAutomatically",
+              "readRowsUntil": "firstEmptyRow"
+            }
+          }
+        }
+      },
+      "id": "6efdfe38-122f-503e-856b-5810a4f1f7dc",
+      "name": "Read Account Configuration",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        272,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "article_control",
+          "mode": "name"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "detectAutomatically",
+              "readRowsUntil": "firstEmptyRow"
+            }
+          }
+        }
+      },
+      "id": "7ffd761d-406f-5e5b-ac6e-dcc2cb5b63d1",
+      "name": "Read Article Control",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        256,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const clean = (value) => String(value ?? '').trim();\nconst parseDeliveryDate = (value) => {\n  const raw = clean(value);\n  const mexicanDate = raw.match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})$/);\n\n  if (mexicanDate) {\n    const [, dayText, monthText, yearText] = mexicanDate;\n    const day = Number(dayText);\n    const month = Number(monthText);\n    const year = Number(yearText);\n\n    const check = new Date(Date.UTC(year, month - 1, day));\n\n    if (\n      check.getUTCFullYear() !== year ||\n      check.getUTCMonth() !== month - 1 ||\n      check.getUTCDate() !== day\n    ) {\n      return null;\n    }\n\n    const isoDay = String(day).padStart(2, '0');\n    const isoMonth = String(month).padStart(2, '0');\n\n    return new Date(\n      String(year) + '-' + isoMonth + '-' + isoDay + 'T00:00:00Z'\n    );\n  }\n\n  const parsed = new Date(raw);\n  return Number.isNaN(parsed.getTime()) ? null : parsed;\n};\n\nconst configs = $items('Read Account Configuration');\nconst configByAccount = new Map();\n\nfor (const item of configs) {\n  const config = item.json;\n  const account = clean(config.account);\n  if (!account) continue;\n  configByAccount.set(account, config);\n}\n\nconst output = [];\n\nfor (const item of $input.all()) {\n  const row = item.json;\n  const status = clean(row.status);\n  const cardId = clean(row['trello_card_id']);\n  if (status !== 'Ready to assign' || cardId) continue;\n\n  const calendarSync = clean(\n    row['calendar_sync']\n  );\n\n  const paymentSync = clean(\n    row['writer_log_sync']\n  );\n\n  if (\n    calendarSync !== 'Synced' ||\n    paymentSync !== 'Synced'\n  ) {\n    continue;\n  }\n\n  const required = {\n    article_id: clean(row.article_id),\n    account: clean(row.account),\n    topic: clean(row.topic),\n    primary_keyword: clean(row['primary_keyword']),\n    delivery_date: clean(row['delivery_date'])\n  };\n  const missing = Object.entries(required)\n    .filter(([, value]) => !value)\n    .map(([key]) => key);\n  if (missing.length) {\n    throw new Error(`Row ${row.row_number ?? '?'} is incomplete. Missing: ${missing.join(', ')}`);\n  }\n\n  const config = configByAccount.get(required.account);\n  if (!config) {\n    throw new Error(`Account is missing from account_config: ${required.account}`);\n  }\n  if (clean(config.active).toLowerCase() !== 'true') {\n    throw new Error(`Inactive account in account_config: ${required.account}`);\n  }\n\n  const labelId = clean(config['trello_label_id']);\n  if (!labelId) {\n    throw new Error(`Missing trello_label_id for: ${required.account}`);\n  }\n\n  const parsedDate = parseDeliveryDate(required.delivery_date);\n  if (!parsedDate) {\n    throw new Error(`Invalid delivery date for ${required.article_id}: ${required.delivery_date}`);\n  }\n\n  output.push({\n    json: {\n      ...row,\n      account_id: clean(config.account_id),\n      client_type: clean(config['client_type']),\n      destination_calendar: clean(config['destination_calendar']),\n      destination_spreadsheet_id: clean(config['destination_spreadsheet_id']),\n      destination_sheet: clean(config['destination_sheet']),\n      trello_label_name: clean(config['trello_label']),\n      trello_label_id: labelId,\n      trello_due: parsedDate.toISOString(),\n      trello_description: `**Primary keyword: ${required.primary_keyword}**\\n**Secondary keyword: ${clean(row['secondary_keyword'])}**${clean(row['category']) ? `\\n**Category:** ${clean(row['category'])}` : ''}\\n\\nControl ID: ${required.article_id}`\n    },\n    pairedItem: item.pairedItem ?? { item: output.length }\n  });\n}\n\nreturn output;"
+      },
+      "id": "84d97009-df9e-5b19-b778-39649f34fbd3",
+      "name": "Validate Assignment Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "listId": "YOUR_TRELLO_IN_PROCESS_LIST_ID",
+        "name": "={{ $('Validate Assignment Candidates').item.json.topic }}",
+        "description": "={{ $('Validate Assignment Candidates').item.json.trello_description }}",
+        "additionalFields": {
+          "due": "={{ $('Validate Assignment Candidates').item.json.trello_due }}",
+          "idMembers": "YOUR_TRELLO_MEMBER_ID",
+          "idLabels": "={{ $('Validate Assignment Candidates').item.json.trello_label_id }}"
+        }
+      },
+      "id": "c16d2150-dc24-59be-996e-499d1f854c72",
+      "name": "Create Trello Card",
+      "type": "n8n-nodes-base.trello",
+      "typeVersion": 1,
+      "position": [
+        1456,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "article_control",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "article_id"
+          ],
+          "schema": [
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "account",
+              "displayName": "account",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "month",
+              "displayName": "month",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "planned_date",
+              "displayName": "planned_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "primary_keyword",
+              "displayName": "primary_keyword",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "secondary_keyword",
+              "displayName": "secondary_keyword",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "delivery_date",
+              "displayName": "delivery_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calendar_sync",
+              "displayName": "calendar_sync",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "writer_log_sync",
+              "displayName": "writer_log_sync",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "trello_card_id",
+              "displayName": "trello_card_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "assignment_date",
+              "displayName": "assignment_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "actual_publication_date",
+              "displayName": "actual_publication_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "URL",
+              "displayName": "URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_updated",
+              "displayName": "last_updated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3e53c004-1074-5def-9046-96e325286e8a",
+      "name": "Confirm Assignment in Master",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1952,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.trello.com/1/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "trelloApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $('Validate Assignment Candidates').item.json.article_id }}"
+            },
+            {
+              "name": "idBoards",
+              "value": "YOUR_TRELLO_BOARD_ID"
+            },
+            {
+              "name": "modelTypes",
+              "value": "cards"
+            },
+            {
+              "name": "cards_limit",
+              "value": "20"
+            },
+            {
+              "name": "card_fields",
+              "value": "id,name,desc,idList,closed"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        960,
+        112
+      ],
+      "id": "702dccda-a2da-5a36-9080-ff987bfac6fe",
+      "name": "Find Existing Trello Card"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2f57727c-1f05-565c-a501-adeebcc5bebe",
+              "leftValue": "={{ ($json.cards ?? []).some(card =>   !card.closed &&   (card.desc ?? '').includes(     'Control ID: ' +     $('Validate Assignment Candidates').item.json.article_id   ) ) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1168,
+        112
+      ],
+      "id": "d0a289bc-0284-529f-bbac-9ece2bcd79e5",
+      "name": "Trello Card Exists?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const articleId =\n  $('Validate Assignment Candidates').item.json.article_id;\n\nconst card = ($json.cards ?? []).find(card =>\n  !card.closed &&\n  (card.desc ?? '').includes(`Control ID: ${articleId}`)\n);\n\nif (!card) {\n  throw new Error(\n    `Could not retrieve existing card for ${articleId}`\n  );\n}\n\nreturn [{ json: card }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        -128
+      ],
+      "id": "c1bb7336-3182-572e-8e77-6ff428d9b80a",
+      "name": "Use Existing Card"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "id": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "updateFields": {
+          "idList": "YOUR_TRELLO_IN_PROCESS_LIST_ID"
+        }
+      },
+      "type": "n8n-nodes-base.trello",
+      "typeVersion": 1,
+      "position": [
+        1584,
+        -64
+      ],
+      "id": "2959b677-6888-569d-9c5f-214050d9de3d",
+      "name": "Move Existing Card to In Process"
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "useDataOfInput": 2
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        544,
+        48
+      ],
+      "id": "a34fb15c-228b-57ec-b0e9-b3dbf6f6bb4d",
+      "name": "Wait for Configuration and Articles"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                2
+              ],
+              "triggerAtHour": 10,
+              "triggerAtMinute": 15
+            }
+          ]
+        }
+      },
+      "id": "ab7e3d0e-2f81-5633-ac40-4397fce892ba",
+      "name": "Tuesday 10:15 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Account Configuration",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Article Control",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Article Control": {
+      "main": [
+        [
+          {
+            "node": "Wait for Configuration and Articles",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Validate Assignment Candidates": {
+      "main": [
+        [
+          {
+            "node": "Find Existing Trello Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Trello Card": {
+      "main": [
+        [
+          {
+            "node": "Prepare Assignment Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Assignment Update": {
+      "main": [
+        [
+          {
+            "node": "Confirm Assignment in Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Account Configuration": {
+      "main": [
+        [
+          {
+            "node": "Wait for Configuration and Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Existing Trello Card": {
+      "main": [
+        [
+          {
+            "node": "Trello Card Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trello Card Exists?": {
+      "main": [
+        [
+          {
+            "node": "Use Existing Card",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Trello Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use Existing Card": {
+      "main": [
+        [
+          {
+            "node": "Move Existing Card to In Process",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move Existing Card to In Process": {
+      "main": [
+        [
+          {
+            "node": "Prepare Assignment Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Configuration and Articles": {
+      "main": [
+        [
+          {
+            "node": "Validate Assignment Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tuesday 10:15 UTC": {
+      "main": [
+        [
+          {
+            "node": "Read Account Configuration",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Article Control",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC"
+  }
+}
