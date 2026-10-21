@@ -1,0 +1,24 @@
+[
+  {
+    "account": "Example Store",
+    "account_id": "example_store",
+    "active": "true",
+    "client_type": "agency",
+    "destination_spreadsheet_id": "YOUR_EXAMPLE_AGENCY_CALENDAR_ID",
+    "destination_sheet": "",
+    "destination_calendar": "Example agency calendar",
+    "trello_label": "Example Store",
+    "trello_label_id": "YOUR_EXAMPLE_TRELLO_LABEL_ID"
+  },
+  {
+    "account": "Sample Studio",
+    "account_id": "sample_studio",
+    "active": "true",
+    "client_type": "direct",
+    "destination_spreadsheet_id": "YOUR_EXAMPLE_DIRECT_CALENDAR_ID",
+    "destination_sheet": "article_calendar",
+    "destination_calendar": "Example direct calendar",
+    "trello_label": "Sample Studio",
+    "trello_label_id": "YOUR_SECOND_TRELLO_LABEL_ID"
+  }
+]
