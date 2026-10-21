@@ -1,0 +1,21 @@
+[
+  {
+    "article_id": "",
+    "account": "Example Store",
+    "month": "October",
+    "planned_date": "2026-10-27",
+    "topic": "How to choose a reusable bottle",
+    "primary_keyword": "reusable bottle",
+    "secondary_keyword": "reusable water bottle",
+    "category": "Buying guides",
+    "delivery_date": "2026-10-29",
+    "status": "Ready to assign",
+    "calendar_sync": "Pending",
+    "writer_log_sync": "Pending",
+    "trello_card_id": "",
+    "assignment_date": "",
+    "actual_publication_date": "",
+    "URL": "",
+    "last_updated": ""
+  }
+]
