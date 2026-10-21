@@ -1,0 +1,1293 @@
+{
+  "name": "SEO Content Operations - Prepare and Sync",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "98be7284-c374-5f6e-bc7e-39408798fa3e",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "account_config",
+          "mode": "name"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "detectAutomatically",
+              "readRowsUntil": "firstEmptyRow"
+            }
+          }
+        }
+      },
+      "id": "6030b8c7-0423-5842-82d3-3794b170ce63",
+      "name": "Read Account Configuration",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        272,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "article_control",
+          "mode": "name"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "detectAutomatically",
+              "readRowsUntil": "firstEmptyRow"
+            }
+          }
+        }
+      },
+      "id": "80085d81-1a3d-57f4-b1e5-5259f10736da",
+      "name": "Read Article Control",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        256,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const clean = value => String(value ?? '').trim();\n\n// Account prefixes derive from account_id in account_config.\nconst prefixes = {};\n\nconst monthCodes = [\n  'JAN', 'FEB', 'MAR', 'APR',\n  'MAY', 'JUN', 'JUL', 'AUG',\n  'SEP', 'OCT', 'NOV', 'DEC',\n];\n\nfunction parseDate(value) {\n  const raw = clean(value);\n\n  let match = raw.match(\n    /^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})$/\n  );\n\n  if (match) {\n    const day = Number(match[1]);\n    const month = Number(match[2]);\n    const year = Number(match[3]);\n\n    const check = new Date(\n      Date.UTC(year, month - 1, day)\n    );\n\n    if (\n      check.getUTCFullYear() !== year ||\n      check.getUTCMonth() !== month - 1 ||\n      check.getUTCDate() !== day\n    ) {\n      return null;\n    }\n\n    return { day, month, year };\n  }\n\n  match = raw.match(\n    /^(\\d{4})-(\\d{1,2})-(\\d{1,2})$/\n  );\n\n  if (match) {\n    const year = Number(match[1]);\n    const month = Number(match[2]);\n    const day = Number(match[3]);\n\n    const check = new Date(\n      Date.UTC(year, month - 1, day)\n    );\n\n    if (\n      check.getUTCFullYear() !== year ||\n      check.getUTCMonth() !== month - 1 ||\n      check.getUTCDate() !== day\n    ) {\n      return null;\n    }\n\n    return { day, month, year };\n  }\n\n  return null;\n}\n\n\n// ======================================================\n// Account configuration\n// ======================================================\n\nconst configurationItems =\n  $items('Read Account Configuration');\n\nconst configByAccount = new Map();\n\nfor (const item of configurationItems) {\n  const config = item.json;\n  const account = clean(config.account);\n\n  if (account) {\n    configByAccount.set(account, config);\n  }\n}\n\n\n// ======================================================\n// Existing IDs and sequences\n// ======================================================\n\nconst rows = $input.all();\nconst usedIds = new Set();\nconst maximumSequence = new Map();\n\nfor (const item of rows) {\n  const articleId = clean(item.json.article_id);\n\n  if (!articleId) continue;\n\n  if (usedIds.has(articleId)) {\n    throw new Error(\n      `Duplicate article_id in master: ${articleId}`\n    );\n  }\n\n  usedIds.add(articleId);\n\n  const match = articleId.match(\n    /^SEO-(\\d{4})-(\\d{2})-([A-Z0-9]+)-(\\d+)$/\n  );\n\n  if (!match) continue;\n\n  const key =\n    `${match[1]}-${match[2]}-${match[3]}`;\n\n  const sequence = Number(match[4]);\n\n  maximumSequence.set(\n    key,\n    Math.max(\n      maximumSequence.get(key) ?? 0,\n      sequence\n    )\n  );\n}\n\n\n// ======================================================\n// Prepare articles\n// ======================================================\n\nconst output = [];\n\nfor (const item of rows) {\n  const row = item.json;\n  const status = clean(row.status);\n\n  if (status !== 'Ready to assign') {\n    continue;\n  }\n\n  const calendarSync = clean(\n    row['calendar_sync']\n  );\n\n  const paymentSync = clean(\n    row['writer_log_sync']\n  );\n\n  if (\n    calendarSync === 'Synced' &&\n    paymentSync === 'Synced'\n  ) {\n    continue;\n  }\n\n  const account = clean(row.account);\n  const topic = clean(row.topic);\n  const primaryKeyword = clean(\n    row['primary_keyword']\n  );\n\n  const plannedDate = parseDate(\n    row['planned_date']\n  );\n\n  if (!account || !topic || !primaryKeyword) {\n    throw new Error(\n      `Row ${row.row_number ?? '?'} is incomplete. ` +\n      `Account, topic, and primary keyword are required.`\n    );\n  }\n\n  if (!plannedDate) {\n    throw new Error(\n      `Invalid planned date in row ` +\n      `${row.row_number ?? '?'}: ` +\n      `${clean(row['planned_date'])}`\n    );\n  }\n\n  const config = configByAccount.get(account);\n\n  if (!config) {\n    throw new Error(\n      `Missing configuration for: ${account}`\n    );\n  }\n\n  if (\n    clean(config.active).toLowerCase() !== 'true'\n  ) {\n    throw new Error(\n      `Inactive account: ${account}`\n    );\n  }\n\n  const accountId = clean(config.account_id);\n  const prefix =\n    prefixes[accountId] ||\n    accountId.replace(/[^a-z0-9]/gi, '').toUpperCase();\n\n  if (!prefix) {\n    throw new Error(\n      `Cannot determine ID prefix for: ${account}`\n    );\n  }\n\n  const year = String(plannedDate.year);\n  const month = String(\n    plannedDate.month\n  ).padStart(2, '0');\n\n  const sequenceKey =\n    `${year}-${month}-${prefix}`;\n\n  let articleId = clean(row.article_id);\n  let generatedArticleId = false;\n\n  if (!articleId) {\n    if (\n      calendarSync === 'Synced' ||\n      paymentSync === 'Synced'\n    ) {\n      throw new Error(\n        `Row ${row.row_number ?? '?'} is marked as ` +\n        `synced but has no article_id.`\n      );\n    }\n\n    const nextSequence =\n      (maximumSequence.get(sequenceKey) ?? 0) + 1;\n\n    maximumSequence.set(\n      sequenceKey,\n      nextSequence\n    );\n\n    articleId =\n      `SEO-${year}-${month}-${prefix}-` +\n      String(nextSequence).padStart(2, '0');\n\n    if (usedIds.has(articleId)) {\n      throw new Error(\n        `Attempted duplicate article ID: ${articleId}`\n      );\n    }\n\n    usedIds.add(articleId);\n    generatedArticleId = true;\n  }\n\n  const clientType = clean(\n    config['client_type']\n  );\n\n  const destinationSpreadsheetId = clean(\n    config['destination_spreadsheet_id']\n  );\n\n  let destinationSheet;\n\n  if (clientType === 'direct') {\n    destinationSheet = clean(\n      config['destination_sheet']\n    );\n  } else {\n    const monthCode =\n      monthCodes[plannedDate.month - 1];\n\n    const shortYear =\n      year.slice(-2);\n\n    destinationSheet =\n      `BLOG POSTS - ${monthCode}${shortYear}`;\n  }\n\n  if (\n    !destinationSpreadsheetId ||\n    !destinationSheet\n  ) {\n    throw new Error(\n      `Missing destination calendar or sheet for: ${account}`\n    );\n  }\n\n  output.push({\n    json: {\n      ...row,\n      article_id: articleId,\n      article_id_generated: generatedArticleId,\n      account_id: accountId,\n      client_type: clientType,\n      destination_spreadsheet_id:\n        destinationSpreadsheetId,\n      destination_sheet: destinationSheet,\n      update_calendar:\n        calendarSync !== 'Synced',\n      update_writer_log:\n        paymentSync !== 'Synced',\n    },\n    pairedItem:\n      item.pairedItem ?? { item: output.length },\n  });\n}\n\nreturn output;"
+      },
+      "id": "77775ca6-d251-50b2-a00f-bc1f09dd824c",
+      "name": "Prepare Articles for Sync",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "useDataOfInput": 2
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        592,
+        16
+      ],
+      "id": "4aac45b8-72ca-52dd-bd70-860ad28f0616",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "56377a35-d9d1-511d-8a59-86139418a61d",
+              "name": "article_id",
+              "value": "={{ $json.article_id }}",
+              "type": "string"
+            },
+            {
+              "id": "f61b96cf-c2a8-5cbb-bf82-91235e936098",
+              "name": "calendar_sync",
+              "value": "={{ $json.update_calendar ? 'Pending' : $json['calendar_sync'] }}",
+              "type": "string"
+            },
+            {
+              "id": "39b11e9d-30b8-58e7-8885-f6e63bfafc39",
+              "name": "writer_log_sync",
+              "value": "={{ $json.update_writer_log ? 'Pending' : $json['writer_log_sync'] }}",
+              "type": "string"
+            },
+            {
+              "id": "e7f3a8ff-8a1a-579c-ba91-c0246640b8ff",
+              "name": "last_updated",
+              "value": "={{ $now.setZone('UTC').toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "61167da9-06cc-5b45-87a7-f6c2a5f91bfb",
+              "name": "topic",
+              "value": "={{ $json.topic }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        960,
+        -32
+      ],
+      "id": "332dba71-27e5-51fc-90c2-e43ba0a82573",
+      "name": "Prepare Master Record"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "article_control",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "article_id": "={{ $json.article_id }}",
+            "calendar_sync": "={{ $json['calendar_sync'] }}",
+            "writer_log_sync": "={{ $json['writer_log_sync'] }}",
+            "last_updated": "={{ $json['last_updated'] }}",
+            "topic": "={{ $json.topic }}"
+          },
+          "matchingColumns": [
+            "topic"
+          ],
+          "schema": [
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calendar_sync",
+              "displayName": "calendar_sync",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "writer_log_sync",
+              "displayName": "writer_log_sync",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_updated",
+              "displayName": "last_updated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1120,
+        128
+      ],
+      "id": "9b03369f-bde8-5878-8e83-672adad96779",
+      "name": "Save Master Record"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const original =\n  $('Prepare Articles for Sync').item.json;\n\nreturn {\n  json: original\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        -16
+      ],
+      "id": "fb734d36-ce3d-5203-b112-46808f6e3ad4",
+      "name": "Restore Prepared Article"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "9a656c0d-5b2e-597d-8ef8-ec738aca8b8f",
+              "leftValue": "={{ $json.update_calendar }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1472,
+        -160
+      ],
+      "id": "37b36172-e342-50b2-a6b4-4c512bbc2c30",
+      "name": "Sync Calendar?"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.client_type }}",
+                    "rightValue": "agency",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "3fd47ba0-2d45-538f-b797-c4bf19e5ddc6"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "agency"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "5a462030-37b0-59fe-aef3-0d97da7a0d8e",
+                    "leftValue": "={{ $json.client_type }}",
+                    "rightValue": "direct",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "direct"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1664,
+        -288
+      ],
+      "id": "78cf5a58-4e01-5df3-9899-7961bce5f714",
+      "name": "Choose Calendar Route"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "039915e2-c25e-5352-8392-cd876e4b3734",
+              "leftValue": "={{ $json.update_writer_log }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1536,
+        80
+      ],
+      "id": "d8fe4b76-636f-5ab6-b4d7-053580a061f1",
+      "name": "Sync Writer Log?"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.destination_spreadsheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $json.destination_sheet }}",
+          "mode": "name"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "specifyRange",
+              "headerRow": 2,
+              "firstDataRow": 3
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1856,
+        -400
+      ],
+      "id": "8ad525e8-cd50-5001-8b32-0f749f2b5ca7",
+      "name": "Read Agency Calendar"
+    },
+    {
+      "parameters": {
+        "jsCode": "const clean = value =>\n  String(value ?? '').trim();\n\nconst normalize = value =>\n  clean(value)\n    .normalize('NFD')\n    .replace(/\\p{Diacritic}/gu, '')\n    .toLowerCase();\n\nconst sheetRows = [\n  ...new Map(\n    $input.all().map(item => [\n      Number(item.json.row_number),\n      item.json,\n    ])\n  ).values(),\n];\n\nconst candidates =\n  $items('Restore Prepared Article')\n    .map(item => item.json)\n    .filter(item =>\n      item.client_type === 'agency' &&\n      item.update_calendar === true\n    );\n\nif (!candidates.length) {\n  return [];\n}\n\n\n// ======================================================\n// One destination spreadsheet and monthly sheet per execution\nconst destinationIds = [...new Set(candidates.map(item => clean(item.destination_spreadsheet_id)))];\nif (destinationIds.length !== 1) throw new Error('Batch contains multiple destination spreadsheets. Run each separately.');\n// ======================================================\n\nconst destinationSheets = [\n  ...new Set(\n    candidates.map(item =>\n      clean(item.destination_sheet)\n    )\n  )\n];\n\nif (destinationSheets.length !== 1) {\n  throw new Error(\n    'Batch contains multiple monthly sheets: ' +\n    destinationSheets.join(', ') +\n    '. Run each month separately.'\n  );\n}\n\nlet headerRows = sheetRows\n  .filter(row =>\n    clean(row.topic) === 'topic'\n  )\n  .map(row => ({\n    rowNumber: Number(row.row_number),\n    values: Object.values(row)\n      .map(normalize)\n      .filter(Boolean),\n    raw: row,\n  }));\n\n\n// ======================================================\n// Recover first account header used as column names by n8n\n// ======================================================\n\nconst schemaRow = sheetRows.find(row =>\n  Object.keys(row).some(column =>\n    normalize(column) === 'topic'\n  )\n);\n\nconst returnedRowNumbers = sheetRows\n  .map(row => Number(row.row_number))\n  .filter(Number.isFinite);\n\nif (\n  schemaRow &&\n  returnedRowNumbers.length\n) {\n  const columnNames =\n    Object.keys(schemaRow);\n\n  const topicColumnIndex =\n    columnNames.findIndex(column =>\n      normalize(column) === 'topic'\n    );\n\n  const firstAccountName =\n    topicColumnIndex > 0\n      ? columnNames[topicColumnIndex - 1]\n      : '';\n\n  const firstHeaderRowNumber =\n    Math.min(...returnedRowNumbers) - 1;\n\n  if (\n    firstAccountName &&\n    !headerRows.some(header =>\n      header.values.includes(\n        normalize(firstAccountName)\n      )\n    )\n  ) {\n    headerRows.push({\n      rowNumber: firstHeaderRowNumber,\n      values: [\n        normalize(firstAccountName),\n        'topic',\n      ],\n      raw: {},\n    });\n  }\n}\n\nheaderRows.sort(\n  (a, b) => a.rowNumber - b.rowNumber\n);\n\nconst output = [];\n\nfor (\n  let candidateIndex = 0;\n  candidateIndex < candidates.length;\n  candidateIndex++\n) {\n  const candidate = candidates[candidateIndex];\n\n  const articleId =\n    clean(candidate.article_id);\n\n  const topic =\n    clean(candidate.topic);\n\n  const account =\n    clean(candidate.account);\n\n\n  // ====================================================\n  // 1. Prefer existing article_id\n  // ====================================================\n\n  let target = sheetRows.find(row =>\n    clean(row.article_id) === articleId\n  );\n\n  let matchedBy = 'article_id';\n\n\n  // ====================================================\n  // 2. Otherwise match the exact article title\n  // ====================================================\n\n  if (!target) {\n    target = sheetRows.find(row =>\n      normalize(row.topic) === normalize(topic) &&\n      normalize(row.topic) !== 'topic'\n    );\n\n    matchedBy = 'topic';\n  }\n\n\n  // ====================================================\n  // 3. Otherwise calculate row from account + sequence\n  // ====================================================\n\n  if (!target) {\n    const accountHeaderIndex =\n      headerRows.findIndex(header =>\n        header.values.includes(\n          normalize(account)\n        )\n      );\n\n    if (accountHeaderIndex === -1) {\n      throw new Error(\n        `Cannot find account section for ${account}`\n      );\n    }\n\n    const accountHeader =\n      headerRows[accountHeaderIndex];\n\n    const nextHeader =\n      headerRows[accountHeaderIndex + 1];\n\n    const sequenceMatch =\n      articleId.match(/-(\\d+)$/);\n\n    if (!sequenceMatch) {\n      throw new Error(\n        `Cannot read sequence from ${articleId}`\n      );\n    }\n\n    const sequence =\n      Number(sequenceMatch[1]);\n\n    const targetRowNumber =\n      accountHeader.rowNumber + sequence;\n\n    if (\n      nextHeader &&\n      targetRowNumber >= nextHeader.rowNumber\n    ) {\n      throw new Error(\n        `${articleId} is outside the section ` +\n        `reserved for ${account}`\n      );\n    }\n\n    target =\n      sheetRows.find(row =>\n        Number(row.row_number) ===\n        targetRowNumber\n      ) || {\n        row_number: targetRowNumber\n      };\n\n    const existingId =\n      clean(target.article_id);\n\n    const existingTopic =\n      clean(target.topic);\n\n    if (\n      existingId &&\n      existingId !== articleId\n    ) {\n      throw new Error(\n        `Row ${targetRowNumber} already contains ` +\n        `another article_id: ${existingId}`\n      );\n    }\n\n    if (\n      existingTopic &&\n      normalize(existingTopic) !==\n        normalize(topic)\n    ) {\n      throw new Error(\n        `Row ${targetRowNumber} already contains ` +\n        `another topic: ${existingTopic}`\n      );\n    }\n\n    matchedBy = 'section and sequence';\n  }\n\n  output.push({\n    json: {\n      ...candidate,\n      agency_row_number:\n        Number(target.row_number),\n      agency_match_method: matchedBy,\n    },\n    pairedItem: {\n      item: candidateIndex,\n    },\n  });\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        -416
+      ],
+      "id": "b7d15123-4d14-5bae-a115-3b24917f780a",
+      "name": "Find Agency Calendar Row"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.destination_spreadsheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $json.destination_sheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $json.agency_row_number }}",
+            "topic": "={{ $json.topic }}",
+            "primary_keyword": "={{ $json['primary_keyword'] }}",
+            "secondary_keyword": "={{ $json['secondary_keyword'] }}",
+            "status": "In process",
+            "article_id": "={{ $json.article_id }}"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "primary_keyword",
+              "displayName": "primary_keyword",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "secondary_keyword",
+              "displayName": "secondary_keyword",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "locationDefine": {
+            "values": {
+              "headerRow": 2,
+              "firstDataRow": 3
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2288,
+        -416
+      ],
+      "id": "ede9b555-767c-53bc-b043-ba09610641ae",
+      "name": "Update Agency Calendar"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e094ac4a-3e71-58d3-92cb-e7fd31078240",
+              "name": "article_id",
+              "value": "={{ $('Find Agency Calendar Row').item.json.article_id }}",
+              "type": "string"
+            },
+            {
+              "id": "8d0a2e87-5232-58e9-bb6b-da534186b85a",
+              "name": "calendar_sync",
+              "value": "Synced",
+              "type": "string"
+            },
+            {
+              "id": "1ee5181b-6682-5b90-9bc7-170a104642cf",
+              "name": "last_updated",
+              "value": "={{ $now.setZone('UTC').toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2496,
+        -416
+      ],
+      "id": "1750c32d-ce1c-51af-9f52-7e28a0ca8f49",
+      "name": "Prepare Agency Sync Confirmation"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "article_control",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "article_id": "={{ $('Find Agency Calendar Row').item.json.article_id }}",
+            "calendar_sync": "Synced",
+            "last_updated": "={{ $now.setZone('UTC').toISO() }}"
+          },
+          "matchingColumns": [
+            "article_id"
+          ],
+          "schema": [
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calendar_sync",
+              "displayName": "calendar_sync",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_updated",
+              "displayName": "last_updated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2704,
+        -416
+      ],
+      "id": "25ae9f7e-5526-5db1-afb5-9eb07fc651bd",
+      "name": "Confirm Agency Sync in Master"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_WRITER_LOG_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "writer_log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "article_id": "={{ $json.article_id }}",
+            "assignment_date": "={{ $now.setZone('UTC').toISODate() }}",
+            "status": "In process",
+            "article_title": "={{ $json.topic }}",
+            "client": "={{ $json.account }}",
+            "date entrega": "={{ $json[\"delivery_date\"] }}"
+          },
+          "matchingColumns": [
+            "article_id"
+          ],
+          "schema": [
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "assignment_date",
+              "displayName": "assignment_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "article_title",
+              "displayName": "article_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "client",
+              "displayName": "client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "date entrega",
+              "displayName": "date entrega",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "locationDefine": {
+            "values": {
+              "headerRow": 3,
+              "firstDataRow": 4
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1872,
+        64
+      ],
+      "id": "2c124f3c-634f-5874-9352-5bf0787b7044",
+      "name": "Upsert Writer Log"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a08d43f9-ed60-545f-a894-b4b796e4a942",
+              "name": "article_id",
+              "value": "={{ $('Restore Prepared Article').item.json.article_id }}",
+              "type": "string"
+            },
+            {
+              "id": "168e305b-6628-56a2-978f-a2e9edb5cb70",
+              "name": "calendar_sync",
+              "value": "Synced",
+              "type": "string"
+            },
+            {
+              "id": "9b49a131-8d05-540d-8eb9-01ac5e9b67cf",
+              "name": "last_updated",
+              "value": "={{ $now.setZone('UTC').toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2176,
+        -192
+      ],
+      "id": "e9867783-5017-54df-a839-7f17e143b1d3",
+      "name": "Prepare Direct Sync Confirmation"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "article_control",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "article_id": "={{ $json.article_id }}",
+            "calendar_sync": "={{ $json['calendar_sync'] }}",
+            "last_updated": "={{ $json['last_updated'] }}"
+          },
+          "matchingColumns": [
+            "article_id"
+          ],
+          "schema": [
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calendar_sync",
+              "displayName": "calendar_sync",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_updated",
+              "displayName": "last_updated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2432,
+        -192
+      ],
+      "id": "98082f3f-bb23-506c-80c9-877c12164e13",
+      "name": "Confirm Direct Sync in Master"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.destination_spreadsheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $json.destination_sheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "title": "={{ $json.topic }}",
+            "primary_keyword": "={{ $json['primary_keyword'] }}",
+            "secondary_keyword": "={{ $json['secondary_keyword'] }}",
+            "article_id": "={{ $json.article_id }}"
+          },
+          "matchingColumns": [
+            "article_id"
+          ],
+          "schema": [
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "primary_keyword",
+              "displayName": "primary_keyword",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "secondary_keyword",
+              "displayName": "secondary_keyword",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "locationDefine": {
+            "values": {
+              "headerRow": 2,
+              "firstDataRow": 3
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1936,
+        -192
+      ],
+      "id": "e14e4c5b-23bd-5bca-8cd6-929dc082ac6a",
+      "name": "Upsert Direct Article"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                2
+              ],
+              "triggerAtHour": 10,
+              "triggerAtMinute": 10
+            }
+          ]
+        }
+      },
+      "id": "92d286e7-3e7d-59eb-80de-0aa924256433",
+      "name": "Tuesday 10:10 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "722ddda6-f7f2-5cc5-b25a-671d3c3d0205",
+              "name": "article_id",
+              "value": "={{ $('Restore Prepared Article').item.json.article_id }}",
+              "type": "string"
+            },
+            {
+              "id": "80bdc533-9f8f-5a9e-b5de-cc7e6eec7a18",
+              "name": "writer_log_sync",
+              "value": "Synced",
+              "type": "string"
+            },
+            {
+              "id": "e7bc6aed-b6a0-5104-8f30-1ddfe0a03dd3",
+              "name": "last_updated",
+              "value": "={{ $now.setZone('UTC').toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2080,
+        64
+      ],
+      "id": "bcd2d6dd-3883-5bfb-a9c0-ff8daa355bde",
+      "name": "Prepare Writer Log Confirmation"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_MASTER_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "article_control",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "last_updated": "={{ $now.setZone('UTC').toISO() }}",
+            "article_id": "={{ $json.article_id }}",
+            "writer_log_sync": "Synced"
+          },
+          "matchingColumns": [
+            "article_id"
+          ],
+          "schema": [
+            {
+              "id": "last_updated",
+              "displayName": "last_updated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "article_id",
+              "displayName": "article_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "writer_log_sync",
+              "displayName": "writer_log_sync",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2288,
+        64
+      ],
+      "id": "c9491bd3-561c-5ede-8490-3a027a843d3f",
+      "name": "Confirm Writer Log in Master"
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Account Configuration",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Article Control",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Article Control": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Read Account Configuration": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Articles for Sync": {
+      "main": [
+        [
+          {
+            "node": "Prepare Master Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Prepare Articles for Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Master Record": {
+      "main": [
+        [
+          {
+            "node": "Save Master Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Master Record": {
+      "main": [
+        [
+          {
+            "node": "Restore Prepared Article",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Prepared Article": {
+      "main": [
+        [
+          {
+            "node": "Sync Calendar?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Sync Writer Log?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Calendar?": {
+      "main": [
+        [
+          {
+            "node": "Choose Calendar Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Choose Calendar Route": {
+      "main": [
+        [
+          {
+            "node": "Read Agency Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upsert Direct Article",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Agency Calendar": {
+      "main": [
+        [
+          {
+            "node": "Find Agency Calendar Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Agency Calendar Row": {
+      "main": [
+        [
+          {
+            "node": "Update Agency Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Agency Calendar": {
+      "main": [
+        [
+          {
+            "node": "Prepare Agency Sync Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Agency Sync Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Confirm Agency Sync in Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Writer Log?": {
+      "main": [
+        [
+          {
+            "node": "Upsert Writer Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Direct Sync Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Confirm Direct Sync in Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Direct Article": {
+      "main": [
+        [
+          {
+            "node": "Prepare Direct Sync Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tuesday 10:10 UTC": {
+      "main": [
+        [
+          {
+            "node": "Read Account Configuration",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Article Control",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Writer Log": {
+      "main": [
+        [
+          {
+            "node": "Prepare Writer Log Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Writer Log Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Confirm Writer Log in Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC"
+  }
+}
